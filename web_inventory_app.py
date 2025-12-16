@@ -50,13 +50,13 @@ def initialize_db():
         )
     ''')
     
-    # تحديث الجدول لإضافة رقم المورد إذا لم يكن موجوداً
+    # تحديث الجدول لإضافة رقم المورد
     try:
         cursor.execute("SELECT supplier_phone FROM items LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE items ADD COLUMN supplier_phone TEXT")
         
-    # جدول الحركات
+    # جدول سجل الحركات
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY,
@@ -82,7 +82,6 @@ def initialize_db():
     conn.commit()
     conn.close()
 
-# --- دالة تنفيذ الاستعلامات ---
 def execute_query(query, params=()):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -96,7 +95,6 @@ def execute_query(query, params=()):
     finally:
         conn.close()
 
-# --- دالة جلب البيانات ---
 def fetch_query(query, params=()):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -111,7 +109,7 @@ def fetch_query(query, params=()):
         conn.close()
 
 # -------------------------------------------------------------
-# 📞 دوال التنبيهات وإدارة المخزون
+# 📈 دوال إدارة المخزون والتنبيهات
 # -------------------------------------------------------------
 def send_whatsapp_alert(message_body):
     if WHATSAPP_READY:
@@ -157,11 +155,12 @@ def main_streamlit_app():
     st.set_page_config(page_title="شركة اكسبو تايم", layout="wide")
     st.title("🏆 شركة اكسبو تايم لادارة المخزون 🏆")
 
+    # تهيئة حالة الجلسة لمكونات BOM
     if 'bom_components' not in st.session_state:
         st.session_state.bom_components = [{'raw_sku': '', 'qty': 0.0}]
 
     menu = ["🔍 عرض المخزون", "➕ إدخال صنف", "⚙️ تعريف BOM", "🏭 صرف منتج مجمع", "📜 سجل الحركات"]
-    choice = st.sidebar.selectbox("القائمة الرئيسي", menu)
+    choice = st.sidebar.selectbox("القائمة الرئيسية", menu)
 
     if choice == "🔍 عرض المخزون":
         search = st.text_input("ابحث عن صنف (الاسم أو الكود):")
@@ -183,44 +182,60 @@ def main_streamlit_app():
                 add_or_update_item(name, sku, price, qty, sup, phone, user)
 
     elif choice == "⚙️ تعريف BOM":
-        st.subheader("تعريف المنتجات المجمعة")
-        name_bom = st.text_input("اسم المنتج المجمع (جدار، مكتب...)")
+        st.subheader("⚙️ تعريف المنتجات المجمعة (قائمة المواد)")
+        name_bom = st.text_input("اسم المنتج النهائي (مثل: جدار خشب):")
         
+        # عرض المكونات الحالية مع إمكانية الحذف
         for i, comp in enumerate(st.session_state.bom_components):
-            c1, c2, c3 = st.columns([2, 1, 1])
-            st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود الخام {i+1}", key=f"sku_{i}")
-            st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية {i+1}", key=f"qty_{i}")
-            if c3.button("حذف", key=f"del_{i}"):
+            c1, c2, c3 = st.columns([2, 1, 0.5])
+            st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود المادة الخام {i+1}", value=comp['raw_sku'], key=f"sku_{i}")
+            st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية لكل وحدة {i+1}", value=float(comp['qty']), key=f"qty_{i}")
+            if c3.button("🗑️", key=f"del_{i}"):
                 st.session_state.bom_components.pop(i)
-                st.rerun()
+                st.rerun() # 🆕 تم التصحيح هنا
         
-        if st.button("➕ إضافة مكون"):
+        if st.button("➕ إضافة مكون آخر"):
             st.session_state.bom_components.append({'raw_sku': '', 'qty': 0.0})
-            st.rerun()
+            st.rerun() # 🆕 تم التصحيح هنا
 
-        if st.button("حفظ الوصفة"):
-            execute_query("DELETE FROM bom_recipes WHERE assembled_product_name=?", (name_bom,))
-            for c in st.session_state.bom_components:
-                execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, c['raw_sku'], c['qty']))
-            st.success("✅ تم حفظ الوصفة")
+        if st.button("💾 حفظ وصفة المنتج المجمع"):
+            if name_bom:
+                execute_query("DELETE FROM bom_recipes WHERE assembled_product_name=?", (name_bom,))
+                for c in st.session_state.bom_components:
+                    if c['raw_sku'] and c['qty'] > 0:
+                        execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, c['raw_sku'], c['qty']))
+                st.success(f"✅ تم حفظ وصفة '{name_bom}' بنجاح")
+            else:
+                st.error("يرجى إدخال اسم المنتج النهائي أولاً")
 
     elif choice == "🏭 صرف منتج مجمع":
         bom_list, _ = fetch_query("SELECT DISTINCT assembled_product_name FROM bom_recipes")
-        selected = st.selectbox("اختر المنتج", [b[0] for b in bom_list])
-        qty_to_make = st.number_input("الكمية المراد تصنيعها", min_value=1)
-        user = st.text_input("المسؤول")
-        
-        if st.button("صرف وخصم المخزون"):
-            recipe, _ = fetch_query("SELECT raw_material_sku, required_quantity FROM bom_recipes WHERE assembled_product_name=?", (selected,))
-            for r_sku, r_qty in recipe:
-                total_needed = r_qty * qty_to_make
-                execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku))
-                log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
-            st.success("✅ تم خصم المواد الخام بنجاح")
+        if bom_list:
+            selected = st.selectbox("اختر المنتج المراد تصنيعه", [b[0] for b in bom_list])
+            qty_to_make = st.number_input("الكمية المراد إنتاجها", min_value=1)
+            user = st.text_input("المسؤول عن العملية")
+            
+            if st.button("🚀 تنفيذ الصرف والخصم التلقائي"):
+                recipe, _ = fetch_query("SELECT raw_material_sku, required_quantity FROM bom_recipes WHERE assembled_product_name=?", (selected,))
+                success = True
+                for r_sku, r_qty in recipe:
+                    total_needed = r_qty * qty_to_make
+                    # خصم الكمية
+                    if not execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku)):
+                        success = False
+                    log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
+                
+                if success:
+                    st.success(f"✅ تم خصم المواد الخام لإنتاج {qty_to_make} وحدة من '{selected}'")
+        else:
+            st.warning("لا توجد منتجات مجمعة معرفة بعد. اذهب لتعريف BOM أولاً.")
 
     elif choice == "📜 سجل الحركات":
-        data, cols = fetch_query("SELECT * FROM transactions ORDER BY timestamp DESC")
-        st.table(data)
+        st.subheader("📜 سجل تدقيق الحركات")
+        data, cols = fetch_query("SELECT timestamp, sku, type, quantity_change, user, reason FROM transactions ORDER BY timestamp DESC")
+        if data:
+            df_log = pd.DataFrame(data, columns=cols)
+            st.table(df_log)
 
 if __name__ == '__main__':
     main_streamlit_app()

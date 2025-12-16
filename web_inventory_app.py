@@ -26,19 +26,6 @@ except Exception:
     WHATSAPP_READY = False
 
 # -------------------------------------------------------------
-# ⚙️ دالة إعادة التشغيل الذكية (تحل مشكلة AttributeError)
-# -------------------------------------------------------------
-def universal_rerun():
-    """هذه الدالة تختار طريقة إعادة التشغيل المناسبة لإصدار Streamlit لديك"""
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        try:
-            st.experimental_rerun()
-        except AttributeError:
-            pass # في حال فشل الطريقتين
-
-# -------------------------------------------------------------
 # 🔒 إعداد قاعدة البيانات
 # -------------------------------------------------------------
 DATABASE_NAME = 'inventory_control.db'
@@ -113,22 +100,17 @@ def fetch_query(query, params=()):
     finally:
         conn.close()
 
-def log_transaction(sku, type, quantity_change, user, reason=""):
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    query = 'INSERT INTO transactions (sku, type, quantity_change, user, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?)'
-    execute_query(query, (sku, type, quantity_change, user, reason, current_time))
-
 # -------------------------------------------------------------
-# 🌐 واجهة المستخدم الرئيسية
+# 🌐 واجهة المستخدم الرئيسية (بدون rerun)
 # -------------------------------------------------------------
 def main_streamlit_app():
     initialize_db()
     st.set_page_config(page_title="شركة اكسبو تايم", layout="wide")
     st.title("🏆 شركة اكسبو تايم لادارة المخزون 🏆")
 
-    # تهيئة حالة الجلسة لمكونات BOM
-    if 'bom_components' not in st.session_state:
-        st.session_state.bom_components = [{'raw_sku': '', 'qty': 0.0}]
+    # تهيئة عدد المكونات في الـ BOM
+    if 'num_components' not in st.session_state:
+        st.session_state.num_components = 1
 
     menu = ["🔍 عرض المخزون", "➕ إدخال صنف", "⚙️ تعريف BOM", "🏭 صرف منتج مجمع", "📜 سجل الحركات"]
     choice = st.sidebar.selectbox("القائمة الرئيسية", menu)
@@ -139,8 +121,7 @@ def main_streamlit_app():
         search = st.text_input("ابحث عن صنف (الاسم أو الكود):")
         data, cols = fetch_query("SELECT id, name, sku, quantity, min_stock, price, supplier_phone FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
         if data:
-            df = pd.DataFrame(data, columns=cols)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(pd.DataFrame(data, columns=cols), use_container_width=True)
 
     elif choice == "➕ إدخال صنف":
         with st.form("add_form"):
@@ -160,7 +141,9 @@ def main_streamlit_app():
                         execute_query('UPDATE items SET quantity=?, price=?, supplier_name=?, supplier_phone=?, last_updated=? WHERE sku=?', (new_qty, price, sup, phone, current_time, sku))
                     else:
                         execute_query('INSERT INTO items (name, sku, quantity, price, supplier_name, supplier_phone, last_updated) VALUES (?,?,?,?,?,?,?)', (name, sku, qty, price, sup, phone, current_time))
-                    log_transaction(sku, 'IN', qty, user, 'إدخال مخزون')
+                    
+                    current_time_log = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    execute_query('INSERT INTO transactions (sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,?,?,?,?)', (sku, 'IN', qty, user, 'إدخال مخزون', current_time_log))
                     st.success("✅ تم حفظ البيانات بنجاح")
                 else:
                     st.error("⚠️ الكود يجب أن يبدأ بـ P-")
@@ -169,25 +152,30 @@ def main_streamlit_app():
         st.subheader("⚙️ تعريف المنتجات المجمعة")
         name_bom = st.text_input("اسم المنتج النهائي (مثل: جدار خشب):")
         
-        for i, comp in enumerate(st.session_state.bom_components):
-            c1, c2, c3 = st.columns([2, 1, 0.5])
-            st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود الخام {i+1}", value=comp['raw_sku'], key=f"sku_{i}")
-            st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية {i+1}", value=float(comp['qty']), key=f"qty_{i}")
-            if c3.button("🗑️", key=f"del_{i}"):
-                st.session_state.bom_components.pop(i)
-                universal_rerun()
-        
-        if st.button("➕ إضافة مكون"):
-            st.session_state.bom_components.append({'raw_sku': '', 'qty': 0.0})
-            universal_rerun()
+        # أزرار للتحكم في عدد الخانات (بدون rerun)
+        col_add, col_rem = st.columns(2)
+        if col_add.button("➕ إضافة خانة مكون"):
+            st.session_state.num_components += 1
+        if col_rem.button("➖ تقليل خانة مكون") and st.session_state.num_components > 1:
+            st.session_state.num_components -= 1
 
-        if st.button("💾 حفظ الوصفة"):
-            if name_bom:
+        bom_data = []
+        for i in range(st.session_state.num_components):
+            c1, c2 = st.columns(2)
+            sku_val = c1.text_input(f"كود الخام {i+1}", key=f"sku_bom_{i}")
+            qty_val = c2.number_input(f"الكمية {i+1}", min_value=0.0, key=f"qty_bom_{i}")
+            if sku_val:
+                bom_data.append((sku_val, qty_val))
+
+        if st.button("💾 حفظ الوصفة النهائية"):
+            if name_bom and bom_data:
                 execute_query("DELETE FROM bom_recipes WHERE assembled_product_name=?", (name_bom,))
-                for c in st.session_state.bom_components:
-                    if c['raw_sku'] and c['qty'] > 0:
-                        execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, c['raw_sku'], c['qty']))
+                for s, q in bom_data:
+                    if q > 0:
+                        execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, s, q))
                 st.success(f"✅ تم حفظ وصفة '{name_bom}'")
+            else:
+                st.error("يرجى إدخال اسم المنتج وأكواد المواد")
 
     elif choice == "🏭 صرف منتج مجمع":
         bom_list, _ = fetch_query("SELECT DISTINCT assembled_product_name FROM bom_recipes")
@@ -200,10 +188,10 @@ def main_streamlit_app():
                 for r_sku, r_qty in recipe:
                     total_needed = r_qty * qty_to_make
                     execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku))
-                    log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
-                st.success(f"✅ تم تنفيذ الصرف لـ {qty_to_make} وحدة")
-        else:
-            st.warning("يرجى تعريف BOM أولاً")
+                    
+                    current_time_log = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    execute_query('INSERT INTO transactions (sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,?,?,?,?)', (r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}', current_time_log))
+                st.success(f"✅ تم التنفيذ")
 
     elif choice == "📜 سجل الحركات":
         data, cols = fetch_query("SELECT timestamp, sku, type, quantity_change, user, reason FROM transactions ORDER BY timestamp DESC")

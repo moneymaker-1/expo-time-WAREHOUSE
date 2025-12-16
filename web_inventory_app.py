@@ -6,7 +6,7 @@ from fpdf import FPDF
 import os
 
 # -------------------------------------------------------------
-# إعداد قاعدة البيانات
+# اعداد قاعدة البيانات
 # -------------------------------------------------------------
 DATABASE_NAME = 'inventory_control.db'
 
@@ -28,7 +28,7 @@ def execute_query(query, params=()):
         conn.commit()
         return True
     except sqlite3.Error as e:
-        st.error(f"Error: {e}")
+        st.error(f"خطأ: {e}")
         return False
     finally:
         conn.close()
@@ -45,7 +45,7 @@ def fetch_query(query, params=()):
     finally: conn.close()
 
 # -------------------------------------------------------------
-# دالة إنشاء ملف PDF
+# دالة انشاء ملف PDF لطلب المشتريات
 # -------------------------------------------------------------
 def create_pdf_content(order_ref, items_list, creation_date):
     pdf = FPDF()
@@ -70,127 +70,133 @@ def create_pdf_content(order_ref, items_list, creation_date):
     return pdf.output(dest='S').encode('latin-1')
 
 # -------------------------------------------------------------
-# الواجهة الرئيسية (القائمة كاملة بدون رموز تعبيرية)
+# الواجهة الرئيسية باللغة العربية
 # -------------------------------------------------------------
 def main_streamlit_app():
     initialize_db()
-    st.set_page_config(page_title="Expo Time Management", layout="wide")
-    st.title("Expo Time Inventory Management System")
+    st.set_page_config(page_title="شركة اكسبو تايم لادارة المخزون", layout="wide")
+    st.title("نظام شركة اكسبو تايم لادارة المخزون والمشتريات")
 
     if 'po_rows' not in st.session_state: st.session_state.po_rows = 1
     if 'issue_rows' not in st.session_state: st.session_state.issue_rows = 1
     if 'bom_rows' not in st.session_state: st.session_state.bom_rows = 1
 
     options = [
-        "1. View Inventory and Search",
-        "2. Add or Update Item",
-        "3. Define Assembled Products (BOM)",
-        "4. Register Multiple Item Issue",
-        "5. Register Assembled Product Issue (BOM)",
-        "6. Create Purchase Order PDF",
-        "7. Low Stock Alerts",
-        "8. Total Value Report",
-        "9. Audit Log"
+        "1. عرض المخزون والبحث",
+        "2. ادخال صنف او تحديث كمية",
+        "3. تعريف المنتجات المجمعة BOM",
+        "4. تسجيل صرف متعدد للاصناف",
+        "5. تسجيل صرف منتج مجمع BOM",
+        "6. انشاء طلب شراء PDF",
+        "7. تنبيهات نقص المخزون",
+        "8. تقرير القيمة الاجمالية",
+        "9. سجل العمليات Audit Log"
     ]
     
-    choice = st.sidebar.selectbox("Main Menu:", options)
+    choice = st.sidebar.selectbox("القائمة الرئيسية:", options)
     st.markdown("---")
 
     # 1. عرض المخزون
-    if choice == "1. View Inventory and Search":
-        search = st.text_input("Search by Name or SKU:")
+    if choice == "1. عرض المخزون والبحث":
+        search = st.text_input("ابحث عن صنف بالاسم او الكود:")
         data, cols = fetch_query("SELECT id, name, sku, quantity, min_stock, price FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
-        if data: st.dataframe(pd.DataFrame(data, columns=['ID', 'Name', 'SKU', 'Quantity', 'Min Stock', 'Price']).set_index('ID'), use_container_width=True)
+        if data: st.dataframe(pd.DataFrame(data, columns=['ID', 'الاسم', 'الكود SKU', 'الكمية', 'الحد الادنى', 'السعر']).set_index('ID'), use_container_width=True)
 
-    # 2. إدخال/تحديث
-    elif choice == "2. Add or Update Item":
+    # 2. ادخال/تحديث
+    elif choice == "2. ادخال صنف او تحديث كمية":
         with st.form("add_f"):
-            n, s, p, q, user = st.text_input("Name"), st.text_input("SKU (must start with P-)").upper(), st.number_input("Price"), st.number_input("Quantity"), st.text_input("User")
-            if st.form_submit_button("Save") and s.startswith("P-"):
+            n = st.text_input("اسم الصنف")
+            s = st.text_input("كود الصنف - يجب ان يبدأ بـ P-").upper()
+            p = st.number_input("السعر")
+            q = st.number_input("الكمية")
+            user = st.text_input("اسم المستخدم")
+            if st.form_submit_button("حفظ البيانات") and s.startswith("P-"):
                 t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 check, _ = fetch_query("SELECT quantity FROM items WHERE sku=?", (s,))
                 if check: execute_query("UPDATE items SET quantity=quantity+?, price=?, last_updated=? WHERE sku=?", (q, p, t, s))
-                else: execute_query("INSERT INTO items (name, sku, quantity, price, last_updated, supplier_name) VALUES (?,?,?,?,?,?)", (n, s, q, p, t, "N/A"))
-                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'IN', ?, ?, 'Restock', ?)", (s, q, user, t))
-                st.success("Success: Data Updated")
+                else: execute_query("INSERT INTO items (name, sku, quantity, price, last_updated, supplier_name) VALUES (?,?,?,?,?,?)", (n, s, q, p, t, "غير محدد"))
+                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'IN', ?, ?, 'توريد', ?)", (s, q, user, t))
+                st.success("تم الحفظ وتحديث البيانات بنجاح")
 
     # 3. تعريف BOM
-    elif choice == "3. Define Assembled Products (BOM)":
-        name_bom = st.text_input("Assembled Product Name:")
+    elif choice == "3. تعريف المنتجات المجمعة BOM":
+        st.subheader("اعداد وصفات تجميع المنتجات")
+        name_bom = st.text_input("اسم المنتج النهائي:")
         c1, c2 = st.columns(2)
-        if c1.button("Add Row"): st.session_state.bom_rows += 1
-        if c2.button("Remove Row") and st.session_state.bom_rows > 1: st.session_state.bom_rows -= 1
+        if c1.button("اضافة مكون"): st.session_state.bom_rows += 1
+        if c2.button("حذف مكون") and st.session_state.bom_rows > 1: st.session_state.bom_rows -= 1
         bom_l = []
         for i in range(st.session_state.bom_rows):
             cc1, cc2 = st.columns(2)
-            ss, qq = cc1.text_input(f"Raw Material SKU {i+1}", key=f"bs_{i}"), cc2.number_input(f"Quantity {i+1}", key=f"bq_{i}")
+            ss, qq = cc1.text_input(f"كود المادة الخام {i+1}", key=f"bs_{i}"), cc2.number_input(f"الكمية المطلوبة {i+1}", key=f"bq_{i}")
             if ss: bom_l.append((ss, qq))
-        if st.button("Save BOM Recipe"):
+        if st.button("حفظ وصفة المنتج"):
             execute_query("DELETE FROM bom_recipes WHERE assembled_product_name=?", (name_bom,))
             for s, q in bom_l: execute_query("INSERT INTO bom_recipes VALUES (NULL,?,?,?)", (name_bom, s, q))
-            st.success("BOM Recipe Saved")
+            st.success("تم حفظ وصفة المنتج بنجاح")
 
-    # 4. صرف متعدد
-    elif choice == "4. Register Multiple Item Issue":
-        u = st.text_input("Person in Charge")
-        if st.button("Add to Cart"): st.session_state.issue_rows += 1
+    # 4. صرف متعدد للاصناف
+    elif choice == "4. تسجيل صرف متعدد للاصناف":
+        u = st.text_input("المسؤول عن الصرف")
+        if st.button("اضافة صنف للسلة"): st.session_state.issue_rows += 1
         iss_list = []
         for i in range(st.session_state.issue_rows):
-            cc1, cc2 = st.columns(2); s = cc1.text_input(f"SKU {i+1}", key=f"is_{i}").upper(); q = cc2.number_input(f"Qty {i+1}", key=f"iq_{i}")
+            cc1, cc2 = st.columns(2); s = cc1.text_input(f"كود الصنف {i+1}", key=f"is_{i}").upper(); q = cc2.number_input(f"الكمية المصروفة {i+1}", key=f"iq_{i}")
             if s: iss_list.append((s, q))
-        if st.button("Confirm Issue"):
+        if st.button("تأكيد عملية الصرف"):
             t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for s, q in iss_list:
                 execute_query("UPDATE items SET quantity=quantity-? WHERE sku=?", (q, s))
-                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT', ?, ?, 'Manual Issue', ?)", (s, q, u, t))
-            st.success("Issue Completed Successfully")
+                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT', ?, ?, 'صرف مباشر', ?)", (s, q, u, t))
+            st.success("تمت عملية الخصم من المخزون بنجاح")
 
     # 5. صرف مجمع BOM
-    elif choice == "5. Register Assembled Product Issue (BOM)":
+    elif choice == "5. تسجيل صرف منتج مجمع BOM":
         bom_list, _ = fetch_query("SELECT DISTINCT assembled_product_name FROM bom_recipes")
-        sel = st.selectbox("Select Product", [b[0] for b in bom_list] if bom_list else [""])
-        qp, u = st.number_input("Quantity to Assemble", min_value=1), st.text_input("User")
-        if st.button("Execute BOM Deduction"):
+        sel = st.selectbox("اختر المنتج المراد تجميعه", [b[0] for b in bom_list] if bom_list else [""])
+        qp, u = st.number_input("العدد المراد انتاجه", min_value=1), st.text_input("المسؤول")
+        if st.button("تنفيذ الخصم التلقائي للمواد الخام"):
             recipe, _ = fetch_query("SELECT raw_material_sku, required_quantity FROM bom_recipes WHERE assembled_product_name=?", (sel,))
             t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for rs, rq in recipe:
                 tot = rq * qp
                 execute_query("UPDATE items SET quantity=quantity-? WHERE sku=?", (tot, rs))
-                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT_BOM', ?, ?, ?, ?)", (rs, tot, u, f"Assembled: {sel}", t))
-            st.success("Deduction Done")
+                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT_BOM', ?, ?, ?, ?)", (rs, tot, u, f"انتاج: {sel}", t))
+            st.success("تم خصم كافة المكونات بناء على الوصفة")
 
     # 6. طلب مشتريات PDF
-    elif choice == "6. Create Purchase Order PDF":
+    elif choice == "6. انشاء طلب شراء PDF":
+        st.subheader("اصدار طلب شراء جديد وتنزيله")
         now = datetime.now(); min_del = now + timedelta(hours=3); ref = f"PO-{now.strftime('%y%m%d%H%M')}"
-        if st.button("Add Item to PO"): st.session_state.po_rows += 1
+        if st.button("اضافة صنف للطلب"): st.session_state.po_rows += 1
         po_l = []
         for i in range(st.session_state.po_rows):
             cc1, cc2, cc3 = st.columns([2, 1, 2])
-            ss, qq = cc1.text_input(f"SKU {i+1}", key=f"ps_{i}").upper(), cc2.number_input(f"Qty {i+1}", key=f"pq_{i}")
-            dd = cc3.datetime_input(f"Requested Date {i+1}", value=min_del, min_value=min_del, key=f"pd_{i}")
+            ss, qq = cc1.text_input(f"كود الصنف {i+1}", key=f"ps_{i}").upper(), cc2.number_input(f"الكمية {i+1}", key=f"pq_{i}")
+            dd = cc3.datetime_input(f"تاريخ التوريد المطلوب {i+1}", value=min_del, min_value=min_del, key=f"pd_{i}")
             if ss: po_l.append((ss, qq, dd.strftime("%Y-%m-%d %H:%M")))
-        if st.button("Generate and Prepare PDF"):
+        if st.button("اعتماد الطلب وانشاء ملف PDF"):
             creation = now.strftime("%Y-%m-%d %H:%M:%S")
             pdf_b = create_pdf_content(ref, po_l, creation)
-            st.success(f"PO {ref} Authorized")
-            st.download_button("Download PO (PDF)", pdf_b, f"PO_{ref}.pdf", "application/pdf")
+            st.success(f"تم اعتماد الطلب رقم {ref}")
+            st.download_button("تنزيل ملف طلب الشراء (PDF)", pdf_b, f"Order_{ref}.pdf", "application/pdf")
 
     # 7. التنبيهات
-    elif choice == "7. Low Stock Alerts":
+    elif choice == "7. تنبيهات نقص المخزون":
         d, _ = fetch_query("SELECT name, sku, quantity, min_stock FROM items WHERE quantity <= min_stock")
-        if d: st.table(d)
-        else: st.success("All stock levels are safe")
+        if d: st.table(pd.DataFrame(d, columns=['الاسم', 'الكود', 'الكمية الحالية', 'الحد الادنى']))
+        else: st.success("جميع مستويات المخزون سليمة")
 
-    # 8. القيمة الإجمالية
-    elif choice == "8. Total Value Report":
+    # 8. تقرير القيمة المالية
+    elif choice == "8. تقرير القيمة الاجمالية":
         d, _ = fetch_query("SELECT name, quantity, price FROM items")
-        df = pd.DataFrame(d, columns=['Name', 'Quantity', 'Price'])
-        st.metric("Total Warehouse Value", f"{(df['Quantity'] * df['Price']).sum():,.2f}")
+        df = pd.DataFrame(d, columns=['الاسم', 'الكمية', 'السعر'])
+        st.metric("قيمة المخزون الكلية في المستودع", f"{(df['الكمية'] * df['السعر']).sum():,.2f}")
 
-    # 9. السجل
-    elif choice == "9. Audit Log":
+    # 9. سجل العمليات
+    elif choice == "9. سجل العمليات Audit Log":
         d, _ = fetch_query("SELECT timestamp, sku, type, quantity_change, user, reason FROM transactions ORDER BY timestamp DESC")
-        st.table(d)
+        st.table(pd.DataFrame(d, columns=['التاريخ', 'الكود SKU', 'النوع', 'الكمية', 'المستخدم', 'السبب']))
 
 if __name__ == '__main__':
     main_streamlit_app()

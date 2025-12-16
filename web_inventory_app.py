@@ -7,7 +7,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 
 # -------------------------------------------------------------
-# 📞 تحميل الإعدادات السرية
+# 📞 تحميل الإعدادات من ملف .env
 # -------------------------------------------------------------
 load_dotenv()
 
@@ -33,7 +33,10 @@ def universal_rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
-        st.experimental_rerun()
+        try:
+            st.experimental_rerun()
+        except AttributeError:
+            pass # في حال فشل الطريقتين
 
 # -------------------------------------------------------------
 # 🔒 إعداد قاعدة البيانات
@@ -60,6 +63,7 @@ def initialize_db():
         cursor.execute("SELECT supplier_phone FROM items LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE items ADD COLUMN supplier_phone TEXT")
+        
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY,
@@ -115,18 +119,21 @@ def log_transaction(sku, type, quantity_change, user, reason=""):
     execute_query(query, (sku, type, quantity_change, user, reason, current_time))
 
 # -------------------------------------------------------------
-# 🌐 واجهة المستخدم
+# 🌐 واجهة المستخدم الرئيسية
 # -------------------------------------------------------------
 def main_streamlit_app():
     initialize_db()
     st.set_page_config(page_title="شركة اكسبو تايم", layout="wide")
     st.title("🏆 شركة اكسبو تايم لادارة المخزون 🏆")
 
+    # تهيئة حالة الجلسة لمكونات BOM
     if 'bom_components' not in st.session_state:
         st.session_state.bom_components = [{'raw_sku': '', 'qty': 0.0}]
 
     menu = ["🔍 عرض المخزون", "➕ إدخال صنف", "⚙️ تعريف BOM", "🏭 صرف منتج مجمع", "📜 سجل الحركات"]
     choice = st.sidebar.selectbox("القائمة الرئيسية", menu)
+
+    st.markdown("---")
 
     if choice == "🔍 عرض المخزون":
         search = st.text_input("ابحث عن صنف (الاسم أو الكود):")
@@ -154,7 +161,7 @@ def main_streamlit_app():
                     else:
                         execute_query('INSERT INTO items (name, sku, quantity, price, supplier_name, supplier_phone, last_updated) VALUES (?,?,?,?,?,?,?)', (name, sku, qty, price, sup, phone, current_time))
                     log_transaction(sku, 'IN', qty, user, 'إدخال مخزون')
-                    st.success("✅ تم الحفظ")
+                    st.success("✅ تم حفظ البيانات بنجاح")
                 else:
                     st.error("⚠️ الكود يجب أن يبدأ بـ P-")
 
@@ -168,11 +175,11 @@ def main_streamlit_app():
             st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية {i+1}", value=float(comp['qty']), key=f"qty_{i}")
             if c3.button("🗑️", key=f"del_{i}"):
                 st.session_state.bom_components.pop(i)
-                universal_rerun() # استخدام الدالة الجديدة هنا
+                universal_rerun()
         
         if st.button("➕ إضافة مكون"):
             st.session_state.bom_components.append({'raw_sku': '', 'qty': 0.0})
-            universal_rerun() # استخدام الدالة الجديدة هنا
+            universal_rerun()
 
         if st.button("💾 حفظ الوصفة"):
             if name_bom:
@@ -180,7 +187,7 @@ def main_streamlit_app():
                 for c in st.session_state.bom_components:
                     if c['raw_sku'] and c['qty'] > 0:
                         execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, c['raw_sku'], c['qty']))
-                st.success("✅ تم الحفظ")
+                st.success(f"✅ تم حفظ وصفة '{name_bom}'")
 
     elif choice == "🏭 صرف منتج مجمع":
         bom_list, _ = fetch_query("SELECT DISTINCT assembled_product_name FROM bom_recipes")
@@ -194,7 +201,9 @@ def main_streamlit_app():
                     total_needed = r_qty * qty_to_make
                     execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku))
                     log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
-                st.success("✅ تم التنفيذ")
+                st.success(f"✅ تم تنفيذ الصرف لـ {qty_to_make} وحدة")
+        else:
+            st.warning("يرجى تعريف BOM أولاً")
 
     elif choice == "📜 سجل الحركات":
         data, cols = fetch_query("SELECT timestamp, sku, type, quantity_change, user, reason FROM transactions ORDER BY timestamp DESC")

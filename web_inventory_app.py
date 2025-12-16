@@ -185,18 +185,19 @@ def main_streamlit_app():
         st.subheader("⚙️ تعريف المنتجات المجمعة (قائمة المواد)")
         name_bom = st.text_input("اسم المنتج النهائي (مثل: جدار خشب):")
         
-        # عرض المكونات الحالية مع إمكانية الحذف
         for i, comp in enumerate(st.session_state.bom_components):
             c1, c2, c3 = st.columns([2, 1, 0.5])
             st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود المادة الخام {i+1}", value=comp['raw_sku'], key=f"sku_{i}")
             st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية لكل وحدة {i+1}", value=float(comp['qty']), key=f"qty_{i}")
+            
+            # تغيير st.experimental_rerun() إلى st.rerun()
             if c3.button("🗑️", key=f"del_{i}"):
                 st.session_state.bom_components.pop(i)
-                st.rerun() # 🆕 تم التصحيح هنا
+                st.rerun() 
         
         if st.button("➕ إضافة مكون آخر"):
             st.session_state.bom_components.append({'raw_sku': '', 'qty': 0.0})
-            st.rerun() # 🆕 تم التصحيح هنا
+            st.rerun() 
 
         if st.button("💾 حفظ وصفة المنتج المجمع"):
             if name_bom:
@@ -220,7 +221,6 @@ def main_streamlit_app():
                 success = True
                 for r_sku, r_qty in recipe:
                     total_needed = r_qty * qty_to_make
-                    # خصم الكمية
                     if not execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku)):
                         success = False
                     log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
@@ -228,7 +228,7 @@ def main_streamlit_app():
                 if success:
                     st.success(f"✅ تم خصم المواد الخام لإنتاج {qty_to_make} وحدة من '{selected}'")
         else:
-            st.warning("لا توجد منتجات مجمعة معرفة بعد. اذهب لتعريف BOM أولاً.")
+            st.warning("لا توجد منتجات مجمعة معرفة بعد.")
 
     elif choice == "📜 سجل الحركات":
         st.subheader("📜 سجل تدقيق الحركات")

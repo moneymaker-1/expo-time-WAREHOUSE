@@ -7,7 +7,7 @@ from twilio.rest import Client
 from dotenv import load_dotenv
 
 # -------------------------------------------------------------
-# 📞 تحميل الإعدادات السرية من ملف .env
+# 📞 تحميل الإعدادات السرية
 # -------------------------------------------------------------
 load_dotenv()
 
@@ -16,7 +16,6 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 DESTINATION_WHATSAPP_NUMBER = os.getenv("DESTINATION_WHATSAPP_NUMBER")
 
-# تهيئة عميل Twilio
 try:
     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -27,6 +26,16 @@ except Exception:
     WHATSAPP_READY = False
 
 # -------------------------------------------------------------
+# ⚙️ دالة إعادة التشغيل الذكية (تحل مشكلة AttributeError)
+# -------------------------------------------------------------
+def universal_rerun():
+    """هذه الدالة تختار طريقة إعادة التشغيل المناسبة لإصدار Streamlit لديك"""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+# -------------------------------------------------------------
 # 🔒 إعداد قاعدة البيانات
 # -------------------------------------------------------------
 DATABASE_NAME = 'inventory_control.db'
@@ -34,8 +43,6 @@ DATABASE_NAME = 'inventory_control.db'
 def initialize_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    
-    # جدول الأصناف
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY,
@@ -49,14 +56,10 @@ def initialize_db():
             last_updated TEXT NOT NULL
         )
     ''')
-    
-    # تحديث الجدول لإضافة رقم المورد
     try:
         cursor.execute("SELECT supplier_phone FROM items LIMIT 1")
     except sqlite3.OperationalError:
         cursor.execute("ALTER TABLE items ADD COLUMN supplier_phone TEXT")
-        
-    # جدول سجل الحركات
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY,
@@ -68,8 +71,6 @@ def initialize_db():
             timestamp TEXT NOT NULL           
         )
     ''')
-    
-    # جدول وصفات التجميع (BOM)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bom_recipes (
             id INTEGER PRIMARY KEY,
@@ -108,54 +109,19 @@ def fetch_query(query, params=()):
     finally:
         conn.close()
 
-# -------------------------------------------------------------
-# 📈 دوال إدارة المخزون والتنبيهات
-# -------------------------------------------------------------
-def send_whatsapp_alert(message_body):
-    if WHATSAPP_READY:
-        try:
-            client.messages.create(
-                from_=TWILIO_WHATSAPP_NUMBER,
-                body=message_body,
-                to=DESTINATION_WHATSAPP_NUMBER
-            )
-        except Exception:
-            pass
-
 def log_transaction(sku, type, quantity_change, user, reason=""):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     query = 'INSERT INTO transactions (sku, type, quantity_change, user, reason, timestamp) VALUES (?, ?, ?, ?, ?, ?)'
     execute_query(query, (sku, type, quantity_change, user, reason, current_time))
 
-def add_or_update_item(name, sku, price, quantity, supplier_name, supplier_phone, user):
-    if not sku.startswith("P-"):
-        st.error("⚠️ يجب أن يبدأ الكود بـ P-")
-        return
-    
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    item_data, _ = fetch_query("SELECT quantity FROM items WHERE sku=?", (sku,))
-    
-    if item_data:
-        new_qty = item_data[0][0] + quantity
-        query = 'UPDATE items SET quantity=?, price=?, supplier_name=?, supplier_phone=?, last_updated=? WHERE sku=?'
-        if execute_query(query, (new_qty, price, supplier_name, supplier_phone, current_time, sku)):
-            st.success(f"✅ تم تحديث {name}. الكمية الجديدة: {new_qty}")
-            log_transaction(sku, 'IN', quantity, user, 'تحديث كمية')
-    else:
-        query = 'INSERT INTO items (name, sku, quantity, price, supplier_name, supplier_phone, last_updated) VALUES (?,?,?,?,?,?,?)'
-        if execute_query(query, (name, sku, quantity, price, supplier_name, supplier_phone, current_time)):
-            st.success(f"➕ تم إضافة صنف جديد: {name}")
-            log_transaction(sku, 'IN', quantity, user, 'إضافة صنف')
-
 # -------------------------------------------------------------
-# 🌐 واجهة المستخدم (Streamlit)
+# 🌐 واجهة المستخدم
 # -------------------------------------------------------------
 def main_streamlit_app():
     initialize_db()
     st.set_page_config(page_title="شركة اكسبو تايم", layout="wide")
     st.title("🏆 شركة اكسبو تايم لادارة المخزون 🏆")
 
-    # تهيئة حالة الجلسة لمكونات BOM
     if 'bom_components' not in st.session_state:
         st.session_state.bom_components = [{'raw_sku': '', 'qty': 0.0}]
 
@@ -179,63 +145,61 @@ def main_streamlit_app():
             phone = st.text_input("رقم المورد")
             user = st.text_input("المستخدم")
             if st.form_submit_button("حفظ"):
-                add_or_update_item(name, sku, price, qty, sup, phone, user)
+                if sku.startswith("P-"):
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    item_data, _ = fetch_query("SELECT quantity FROM items WHERE sku=?", (sku,))
+                    if item_data:
+                        new_qty = item_data[0][0] + qty
+                        execute_query('UPDATE items SET quantity=?, price=?, supplier_name=?, supplier_phone=?, last_updated=? WHERE sku=?', (new_qty, price, sup, phone, current_time, sku))
+                    else:
+                        execute_query('INSERT INTO items (name, sku, quantity, price, supplier_name, supplier_phone, last_updated) VALUES (?,?,?,?,?,?,?)', (name, sku, qty, price, sup, phone, current_time))
+                    log_transaction(sku, 'IN', qty, user, 'إدخال مخزون')
+                    st.success("✅ تم الحفظ")
+                else:
+                    st.error("⚠️ الكود يجب أن يبدأ بـ P-")
 
     elif choice == "⚙️ تعريف BOM":
-        st.subheader("⚙️ تعريف المنتجات المجمعة (قائمة المواد)")
+        st.subheader("⚙️ تعريف المنتجات المجمعة")
         name_bom = st.text_input("اسم المنتج النهائي (مثل: جدار خشب):")
         
         for i, comp in enumerate(st.session_state.bom_components):
             c1, c2, c3 = st.columns([2, 1, 0.5])
-            st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود المادة الخام {i+1}", value=comp['raw_sku'], key=f"sku_{i}")
-            st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية لكل وحدة {i+1}", value=float(comp['qty']), key=f"qty_{i}")
-            
-            # تغيير st.experimental_rerun() إلى st.rerun()
+            st.session_state.bom_components[i]['raw_sku'] = c1.text_input(f"كود الخام {i+1}", value=comp['raw_sku'], key=f"sku_{i}")
+            st.session_state.bom_components[i]['qty'] = c2.number_input(f"الكمية {i+1}", value=float(comp['qty']), key=f"qty_{i}")
             if c3.button("🗑️", key=f"del_{i}"):
                 st.session_state.bom_components.pop(i)
-                st.rerun() 
+                universal_rerun() # استخدام الدالة الجديدة هنا
         
-        if st.button("➕ إضافة مكون آخر"):
+        if st.button("➕ إضافة مكون"):
             st.session_state.bom_components.append({'raw_sku': '', 'qty': 0.0})
-            st.rerun() 
+            universal_rerun() # استخدام الدالة الجديدة هنا
 
-        if st.button("💾 حفظ وصفة المنتج المجمع"):
+        if st.button("💾 حفظ الوصفة"):
             if name_bom:
                 execute_query("DELETE FROM bom_recipes WHERE assembled_product_name=?", (name_bom,))
                 for c in st.session_state.bom_components:
                     if c['raw_sku'] and c['qty'] > 0:
                         execute_query("INSERT INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (name_bom, c['raw_sku'], c['qty']))
-                st.success(f"✅ تم حفظ وصفة '{name_bom}' بنجاح")
-            else:
-                st.error("يرجى إدخال اسم المنتج النهائي أولاً")
+                st.success("✅ تم الحفظ")
 
     elif choice == "🏭 صرف منتج مجمع":
         bom_list, _ = fetch_query("SELECT DISTINCT assembled_product_name FROM bom_recipes")
         if bom_list:
-            selected = st.selectbox("اختر المنتج المراد تصنيعه", [b[0] for b in bom_list])
-            qty_to_make = st.number_input("الكمية المراد إنتاجها", min_value=1)
-            user = st.text_input("المسؤول عن العملية")
-            
-            if st.button("🚀 تنفيذ الصرف والخصم التلقائي"):
+            selected = st.selectbox("اختر المنتج", [b[0] for b in bom_list])
+            qty_to_make = st.number_input("الكمية", min_value=1)
+            user = st.text_input("المسؤول")
+            if st.button("🚀 تنفيذ الصرف"):
                 recipe, _ = fetch_query("SELECT raw_material_sku, required_quantity FROM bom_recipes WHERE assembled_product_name=?", (selected,))
-                success = True
                 for r_sku, r_qty in recipe:
                     total_needed = r_qty * qty_to_make
-                    if not execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku)):
-                        success = False
+                    execute_query("UPDATE items SET quantity = quantity - ? WHERE sku = ?", (total_needed, r_sku))
                     log_transaction(r_sku, 'OUT_BOM', total_needed, user, f'تصنيع {selected}')
-                
-                if success:
-                    st.success(f"✅ تم خصم المواد الخام لإنتاج {qty_to_make} وحدة من '{selected}'")
-        else:
-            st.warning("لا توجد منتجات مجمعة معرفة بعد.")
+                st.success("✅ تم التنفيذ")
 
     elif choice == "📜 سجل الحركات":
-        st.subheader("📜 سجل تدقيق الحركات")
         data, cols = fetch_query("SELECT timestamp, sku, type, quantity_change, user, reason FROM transactions ORDER BY timestamp DESC")
         if data:
-            df_log = pd.DataFrame(data, columns=cols)
-            st.table(df_log)
+            st.table(pd.DataFrame(data, columns=cols))
 
 if __name__ == '__main__':
     main_streamlit_app()

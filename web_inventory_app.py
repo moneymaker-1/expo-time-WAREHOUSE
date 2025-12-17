@@ -14,27 +14,18 @@ DATABASE_NAME = 'inventory_control.db'
 def initialize_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    # جداول النظام مع دعم الترقيم التلقائي للمنتجات
     cursor.execute('''CREATE TABLE IF NOT EXISTS items 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, sku TEXT UNIQUE, quantity REAL, 
         min_stock REAL DEFAULT 5, price REAL, last_updated TEXT)''')
-    
-    # جدول الحركات مع دعم رقم السند الموحد
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, ref_code TEXT, sku TEXT, type TEXT, 
         quantity_change REAL, user TEXT, reason TEXT, timestamp TEXT)''')
-    
-    # جدول وصفات التصنيع BOM
     cursor.execute('''CREATE TABLE IF NOT EXISTS bom_recipes 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, assembled_product_name TEXT, raw_material_sku TEXT, required_quantity REAL, 
         UNIQUE(assembled_product_name, raw_material_sku))''')
-    
-    # جدول المستخدمين
     cursor.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)')
     conn.commit()
     conn.close()
-    
-    # إضافة المدير الافتراضي (admin / admin123)
     admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
     execute_query('INSERT OR IGNORE INTO users VALUES (?, ?, ?)', ('admin', admin_pass, 'مدير'))
 
@@ -62,11 +53,10 @@ def fetch_query(query, params=()):
     except: return [], []
     finally: conn.close()
 
-# دالة توليد كود SKU تلقائياً لضمان التسلسل P-1001
 def get_next_sku():
     res, _ = fetch_query("SELECT MAX(id) FROM items")
     next_id = (res[0][0] + 1) if res and res[0][0] else 1001
-    return f"P-{next_id:05d}" # تنسيق P-00001
+    return f"P-{next_id:05d}"
 
 # -------------------------------------------------------------
 # 2. دوال مساعدة (PDF)
@@ -102,11 +92,9 @@ def main():
 
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
-    # واجهة تسجيل الدخول والتسجيل
     if not st.session_state.logged_in:
         st.title("قفل الأمان - شركة اكسبو تايم")
         tab_login, tab_signup = st.tabs(["🔐 تسجيل الدخول", "📝 إنشاء حساب موظف"])
-        
         with tab_login:
             with st.form("login_form"):
                 user_in = st.text_input("اسم المستخدم")
@@ -118,7 +106,6 @@ def main():
                         st.session_state.logged_in, st.session_state.username, st.session_state.role = True, user_in, res[0][0]
                         st.rerun()
                     else: st.error("بيانات الدخول غير صحيحة")
-        
         with tab_signup:
             with st.form("signup_form"):
                 new_u = st.text_input("اسم المستخدم الجديد")
@@ -129,10 +116,9 @@ def main():
                     elif new_u and new_p:
                         hp = hashlib.sha256(new_p.encode()).hexdigest()
                         if execute_query("INSERT INTO users VALUES (?,?,'موظف')", (new_u, hp)):
-                            st.success("تم إنشاء الحساب بنجاح! يمكنك الدخول الآن")
+                            st.success("تم إنشاء الحساب بنجاح!")
         return
 
-    # تنبيه النواقص الجانبي
     low_stock_data, _ = fetch_query("SELECT name FROM items WHERE quantity <= min_stock")
     if low_stock_data:
         st.sidebar.warning(f"🚨 تنبيه: يوجد {len(low_stock_data)} أصناف تحت الحد الأدنى!")
@@ -152,38 +138,33 @@ def main():
     all_skus = [s[0] for s in skus_raw]
     all_names = [s[1] for s in skus_raw]
 
-    # --- 1. عرض وحذف الأصناف (تم تحسين الألوان لضمان وضوح البيانات) ---
     if choice == "🔍 عرض وحذف الأصناف":
         search = st.text_input("ابحث بالاسم أو الكود")
         data, _ = fetch_query("SELECT name, sku, quantity, price, min_stock FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
         if data:
             df = pd.DataFrame(data, columns=['الاسم', 'الكود SKU', 'الكمية', 'السعر', 'الحد الأدنى'])
-            
-            # دالة تلوين الصفوف: خلفية فاتحة جداً مع خط أحمر غامق وعريض للنواقص
             def highlight_low(row):
                 if row.الكمية <= row['الحد الأدنى']:
                     return ['background-color: #fff0f0; color: #b30000; font-weight: bold'] * len(row)
                 return [''] * len(row)
-            
             st.dataframe(df.style.apply(highlight_low, axis=1), use_container_width=True)
-            
             if st.session_state.role == "مدير":
-                st.markdown("---")
-                st.warning("⚠️ منطقة حذف الأصناف (للمدير فقط)")
+                st.warning("منطقة حذف الأصناف (للمدير فقط)")
                 to_del = st.selectbox("اختر الكود للحذف النهائي", [""] + [d[1] for d in data])
                 if st.button("❌ حذف المنتج نهائياً من النظام") and to_del:
                     execute_query("DELETE FROM items WHERE sku=?", (to_del,))
                     st.success("تم الحذف بنجاح"); st.rerun()
 
-    # --- 2. إضافة وتحديث (توليد كود تلقائي ومنع التكرار) ---
     elif choice == "➕ إضافة وتحديث صنف":
         st.subheader("إدارة الأصناف")
+        mode = st.radio("نوع العملية", ["تحديث صنف موجود", "إضافة صنف جديد كلياً"]) if st.session_state.role == "مدير" else "إضافة صنف جديد كلياً"
+        
         with st.form("item_form"):
-            mode = st.radio("نوع العملية", ["تحديث صنف موجود", "إضافة صنف جديد كلياً"]) if st.session_state.role == "مدير" else "إضافة صنف جديد كلياً"
             if mode == "إضافة صنف جديد كلياً":
+                # توليد الكود التلقائي وعرضه كحقل "للقراءة فقط" عبر تعطيله أو عرضه كمعلومة
                 auto_sku = get_next_sku()
-                st.info(f"الكود التلقائي للمنتج: {auto_sku}")
-                target_sku = auto_sku
+                st.info(f"سيتم إنشاء الصنف بالكود التلقائي: {auto_sku}")
+                target_sku = auto_sku # القيمة التي ستُحفظ
                 target_name = st.text_input("اسم المنتج الجديد")
             else:
                 target_sku = st.selectbox("اختر الكود", [""] + all_skus)
@@ -196,28 +177,29 @@ def main():
             if st.form_submit_button("اعتماد العملية"):
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if mode == "إضافة صنف جديد كلياً":
-                    if target_name in all_names: st.error("الاسم مكرر")
+                    if not target_name: st.error("يرجى إدخال اسم المنتج")
+                    elif target_name in all_names: st.error("الاسم مكرر")
                     else:
                         execute_query("INSERT INTO items (name, sku, quantity, min_stock, price, last_updated) VALUES (?,?,?,?,?,?)", (target_name, target_sku, qty, m_stock, price, now))
                         execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES ('NEW', ?, 'IN', ?, ?, 'إضافة جديد', ?)", (target_sku, qty, st.session_state.username, now))
-                        st.success(f"تمت الإضافة بالكود {target_sku}"); st.rerun()
+                        st.success(f"تمت الإضافة بنجاح بالكود {target_sku}"); st.rerun()
                 else:
-                    execute_query("UPDATE items SET quantity=quantity+?, price=?, last_updated=? WHERE sku=?", (qty, price, now, target_sku))
-                    execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES ('UPDATE', ?, 'IN', ?, ?, 'تحديث كمية', ?)", (target_sku, qty, st.session_state.username, now))
-                    st.success("تم التحديث"); st.rerun()
+                    if not target_sku: st.error("يرجى اختيار الكود")
+                    else:
+                        execute_query("UPDATE items SET quantity=quantity+?, price=?, last_updated=? WHERE sku=?", (qty, price, now, target_sku))
+                        execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES ('UPDATE', ?, 'IN', ?, ?, 'تحديث كمية', ?)", (target_sku, qty, st.session_state.username, now))
+                        st.success("تم التحديث"); st.rerun()
 
-    # --- 3. تعريف منتج BOM ---
     elif choice == "⚙️ تعريف منتج BOM":
         st.subheader("تعريف قائمة المواد المكونة للمنتج")
         with st.form("bom_reg"):
-            p_name = st.selectbox("المنتج المجمع النهائي", all_names)
+            p_name = st.selectbox("المنتج النهائي المجمع", all_names)
             c_sku = st.selectbox("المكون (المادة الخام)", all_skus)
             req_qty = st.number_input("الكمية المطلوبة من المكون لكل وحدة منتج", min_value=0.01)
             if st.form_submit_button("حفظ المكون"):
                 execute_query("INSERT OR REPLACE INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (p_name, c_sku, req_qty))
                 st.success("تم الحفظ")
 
-    # --- 4. صرف أصناف (سلة صرف مدمجة) ---
     elif choice == "📤 صرف أصناف":
         st.subheader("إصدار أمر صرف (DO)")
         if 'basket' not in st.session_state: st.session_state.basket = []
@@ -226,7 +208,6 @@ def main():
         q_sel = c2.number_input("الكمية", min_value=1.0)
         if st.button("➕ أضف للسند"):
             if s_sel: st.session_state.basket.append({"sku": s_sel.split(" | ")[0], "qty": q_sel})
-        
         if st.session_state.basket:
             st.table(pd.DataFrame(st.session_state.basket))
             if st.button("🚀 تأكيد صرف السند بالكامل"):
@@ -237,7 +218,6 @@ def main():
                     execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,'OUT',?,?,?,?)", (do_ref, item['sku'], item['qty'], st.session_state.username, "صرف عادي", now.strftime("%Y-%m-%d %H:%M")))
                 st.success(f"تم الصرف بالسند: {do_ref}"); st.session_state.basket = []; st.rerun()
 
-    # --- 5. صرف BOM ---
     elif choice == "🏭 صرف BOM":
         st.subheader("صرف مجمع للمكونات (إنتاج)")
         p_target = st.selectbox("المنتج المراد إنتاجه", all_names)
@@ -254,7 +234,6 @@ def main():
                 st.success("تم صرف المكونات بنجاح"); st.rerun()
             else: st.error("لم يتم تعريف مكونات لهذا المنتج")
 
-    # --- 6. طلب شراء PDF ---
     elif choice == "📦 طلب شراء PDF":
         if 'po_rows' not in st.session_state: st.session_state.po_rows = 1
         if st.button("➕ إضافة صنف للطلب"): st.session_state.po_rows += 1
@@ -270,14 +249,12 @@ def main():
             pdf_bytes = create_pdf_content(f"PO-{now_dt.strftime('%H%M')}", po_list, now_dt.strftime("%Y-%m-%d"), st.session_state.username)
             st.download_button("📥 تحميل طلب الشراء", pdf_bytes, f"PO_{now_dt.strftime('%m%d%H%M')}.pdf", "application/pdf")
 
-    # --- 7. سجل العمليات ---
     elif choice == "📜 سجل العمليات":
         st.subheader("سجل التدقيق والحركات")
         logs, _ = fetch_query("SELECT timestamp, ref_code, sku, type, quantity_change, user, reason FROM transactions ORDER BY id DESC")
         if logs:
             st.table(pd.DataFrame(logs, columns=['الوقت', 'رقم السند', 'الكود', 'النوع', 'الكمية', 'المستخدم', 'السبب']))
 
-    # --- 8. إدارة المستخدمين ---
     elif choice == "👥 إدارة المستخدمين":
         st.subheader("التحكم في الموظفين")
         u_list, _ = fetch_query("SELECT username FROM users WHERE role='موظف'")

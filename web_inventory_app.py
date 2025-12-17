@@ -14,7 +14,6 @@ DATABASE_NAME = 'inventory_control.db'
 def initialize_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    # جدول الأصناف: يمنع تكرار الاسم أو الكود برمجياً
     cursor.execute('''CREATE TABLE IF NOT EXISTS items (
         id INTEGER PRIMARY KEY, 
         name TEXT UNIQUE, 
@@ -23,8 +22,6 @@ def initialize_db():
         min_stock REAL DEFAULT 5, 
         price REAL, 
         last_updated TEXT)''')
-    
-    # جدول الحركات: يربط كل عملية باسم المستخدم
     cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY, 
         sku TEXT, 
@@ -33,21 +30,16 @@ def initialize_db():
         user TEXT, 
         reason TEXT, 
         timestamp TEXT)''')
-    
-    # جدول وصفات المنتجات المجمعة BOM
     cursor.execute('''CREATE TABLE IF NOT EXISTS bom_recipes (
         id INTEGER PRIMARY KEY, 
         assembled_product_name TEXT, 
         raw_material_sku TEXT, 
         required_quantity REAL, 
         UNIQUE(assembled_product_name, raw_material_sku))''')
-    
-    # جدول المستخدمين
     cursor.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)')
     conn.commit()
     conn.close()
     
-    # إضافة حساب المدير الافتراضي (admin / admin123)
     admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
     execute_query('INSERT OR IGNORE INTO users VALUES (?, ?, ?)', ('admin', admin_pass, 'مدير'))
 
@@ -124,7 +116,6 @@ def main():
             else: st.error("بيانات الدخول غير صحيحة")
         return
 
-    # الشريط الجانبي
     st.sidebar.title(f"المستخدم: {st.session_state.username}")
     st.sidebar.write(f"الصلاحية: {st.session_state.role}")
     if st.sidebar.button("خروج"):
@@ -142,12 +133,10 @@ def main():
     all_skus = [s[0] for s in skus_raw]
     all_names = [s[1] for s in skus_raw]
 
-    # --- 1. إدارة المستخدمين (للمدير فقط) ---
+    # --- 1. إدارة المستخدمين ---
     if choice == "إدارة المستخدمين":
         st.subheader("إدارة الموظفين (الحد الأقصى 10)")
         users_list, _ = fetch_query("SELECT username, role FROM users WHERE role='موظف'")
-        st.info(f"عدد الموظفين الحاليين: {len(users_list)} من 10")
-        
         c1, c2 = st.columns(2)
         with c1:
             new_u = st.text_input("اسم المستخدم")
@@ -164,7 +153,7 @@ def main():
                 execute_query("DELETE FROM users WHERE username=?", (u_del,))
                 st.success("تم الحذف"); st.rerun()
 
-    # --- 2. إضافة وتحديث (تقييد الموظف: إضافة فقط) ---
+    # --- 2. إضافة وتحديث (مع البادئة الثابتة P-) ---
     elif choice == "إضافة وتحديث صنف":
         st.subheader("إدارة الأصناف")
         if st.session_state.role == "مدير":
@@ -178,7 +167,12 @@ def main():
                 target_sku = st.selectbox("اختر الصنف للتحديث", [""] + all_skus)
                 target_name = ""
             else:
-                target_sku = st.text_input("كود الصنف الجديد (P-...)").upper()
+                st.write("أدخل الكود التكميلي بعد البادئة الثابتة:")
+                # جعل P- ثابتة كـ Label أمام خانة الإدخال
+                c1, c2 = st.columns([1, 10])
+                c1.markdown("### **P-**")
+                sku_input = c2.text_input("تكملة كود الصنف (مثلاً: 101)", key="sku_input").upper()
+                target_sku = f"P-{sku_input}"
                 target_name = st.text_input("اسم المنتج الجديد")
             
             qty = st.number_input("الكمية", min_value=0.0)
@@ -187,22 +181,23 @@ def main():
             if st.form_submit_button("اعتماد"):
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if mode == "إضافة صنف جديد تماماً":
-                    if target_name in all_names or target_sku in all_skus:
-                        st.error("⚠️ هذا الصنف موجود مسبقاً.")
-                    elif not target_sku.startswith("P-"):
-                        st.error("⚠️ الكود يجب أن يبدأ بـ P-")
+                    if not sku_input:
+                        st.error("⚠️ يرجى إدخال رقم أو كود الصنف.")
+                    elif target_name in all_names or target_sku in all_skus:
+                        st.error(f"⚠️ الصنف {target_sku} أو الاسم '{target_name}' موجود مسبقاً.")
                     else:
                         execute_query("INSERT INTO items VALUES (NULL,?,?,?,5,?,?)", (target_name, target_sku, qty, price, now))
                         execute_query("INSERT INTO transactions VALUES (NULL, ?, 'IN', ?, ?, 'إضافة صنف', ?)", (target_sku, qty, st.session_state.username, now))
-                        st.success("تم التسجيل"); st.rerun()
+                        st.success(f"تم تسجيل الصنف الجديد {target_sku} بنجاح"); st.rerun()
                 elif mode == "تحديث صنف موجود (مدير)":
-                    execute_query("UPDATE items SET quantity=quantity+?, price=?, last_updated=? WHERE sku=?", (qty, price, now, target_sku))
-                    execute_query("INSERT INTO transactions VALUES (NULL, ?, 'IN', ?, ?, 'تحديث إداري', ?)", (target_sku, qty, st.session_state.username, now))
-                    st.success("تم التحديث الإداري"); st.rerun()
+                    if target_sku:
+                        execute_query("UPDATE items SET quantity=quantity+?, price=?, last_updated=? WHERE sku=?", (qty, price, now, target_sku))
+                        execute_query("INSERT INTO transactions VALUES (NULL, ?, 'IN', ?, ?, 'تحديث إداري', ?)", (target_sku, qty, st.session_state.username, now))
+                        st.success("تم التحديث الإداري"); st.rerun()
 
-    # --- بقية الأقسام المختصرة للحفاظ على الحجم ---
+    # --- (بقية الأقسام: عرض، صرف، PDF، سجل تتبع نفس منطق النسخ السابقة) ---
     elif choice == "عرض وحذف الأصناف":
-        search = st.text_input("بحث")
+        search = st.text_input("بحث بالاسم أو الكود")
         data, _ = fetch_query("SELECT name, sku, quantity, price FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
         if data:
             st.table(pd.DataFrame(data, columns=['الاسم', 'SKU', 'الكمية', 'السعر']))
@@ -225,8 +220,8 @@ def main():
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for s, q in basket:
                 execute_query("UPDATE items SET quantity=quantity-? WHERE sku=?", (q, s))
-                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT', ?, ?, 'صرف', ?)", (s, q, st.session_state.username, now))
-            st.success("تم الصرف"); st.session_state.iss_rows = 1; st.rerun()
+                execute_query("INSERT INTO transactions VALUES (NULL, ?, 'OUT', ?, ?, 'صرف مخزني', ?)", (s, q, st.session_state.username, now))
+            st.success("تم الصرف بنجاح"); st.session_state.iss_rows = 1; st.rerun()
 
     elif choice == "إنشاء طلب شراء PDF":
         if 'po_rows' not in st.session_state: st.session_state.po_rows = 1
@@ -235,12 +230,12 @@ def main():
         for i in range(st.session_state.po_rows):
             c1, c2, c3 = st.columns([2, 1, 2])
             s = c1.selectbox(f"الصنف {i+1}", [""] + all_skus, key=f"ps_{i}")
-            q = c2.number_input(f"الكمية {i+1}", key=f"pq_{i}")
-            d = c3.date_input(f"تاريخ التوريد {i+1}", key=f"pd_{i}")
+            q = c2.number_input(f"الكمية {i+1}", key=f"po_q_{i}")
+            d = c3.date_input(f"تاريخ التوريد {i+1}", key=f"po_d_{i}")
             if s: po_list.append((s, q, d.strftime("%Y-%m-%d")))
         if st.button("📄 توليد PDF"):
             now_dt = datetime.now()
-            pdf_bytes = create_pdf_content(f"PO-{now_dt.strftime('%H%M')}", po_list, now_dt.strftime("%Y-%m-%d"), st.session_state.username)
+            pdf_bytes = create_pdf_content(f"EXPO-PO-{now_dt.strftime('%H%M')}", po_list, now_dt.strftime("%Y-%m-%d"), st.session_state.username)
             st.download_button("📥 تحميل PDF", pdf_bytes, f"PO_{now_dt.strftime('%m%d%H%M')}.pdf", "application/pdf")
 
     elif choice == "سجل العمليات":

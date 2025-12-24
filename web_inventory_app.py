@@ -6,7 +6,7 @@ from fpdf import FPDF
 import hashlib
 
 # -------------------------------------------------------------
-# 1. إعداد قاعدة البيانات (إصلاح خطأ التكرار)
+# 1. إعداد قاعدة البيانات (مع نظام الإصلاح التلقائي)
 # -------------------------------------------------------------
 DATABASE_NAME = 'inventory_control.db'
 
@@ -14,7 +14,7 @@ def initialize_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
-    # إنشاء الجداول الأساسية إذا لم تكن موجودة
+    # الجداول الأساسية
     cursor.execute('''CREATE TABLE IF NOT EXISTS items 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, sku TEXT UNIQUE, quantity INTEGER, 
         unit TEXT, min_stock INTEGER DEFAULT 5, price REAL, supplier_name TEXT DEFAULT 'غير محدد', last_updated TEXT)''')
@@ -29,21 +29,18 @@ def initialize_db():
     
     cursor.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)')
     
-    # --- فحص ذكي للأعمدة لتجنب خطأ التكرار (OperationalError) ---
+    # التحقق من وجود الأعمدة لتجنب OperationalError
     cursor.execute("PRAGMA table_info(items)")
     cols = [info[1] for info in cursor.fetchall()]
-    
     if 'unit' not in cols:
-        try: cursor.execute("ALTER TABLE items ADD COLUMN unit TEXT DEFAULT 'قطعة'")
-        except: pass
+        cursor.execute("ALTER TABLE items ADD COLUMN unit TEXT DEFAULT 'قطعة'")
     if 'supplier_name' not in cols:
-        try: cursor.execute("ALTER TABLE items ADD COLUMN supplier_name TEXT DEFAULT 'غير محدد'")
-        except: pass
+        cursor.execute("ALTER TABLE items ADD COLUMN supplier_name TEXT DEFAULT 'غير محدد'")
     
     conn.commit()
     conn.close()
     
-    # إضافة المدير الافتراضي
+    # المدير الافتراضي
     admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
     execute_query('INSERT OR IGNORE INTO users VALUES (?, ?, ?)', ('admin', admin_pass, 'مدير'))
 
@@ -75,7 +72,7 @@ def generate_auto_sku():
     return f"P-{next_id:05d}"
 
 # -------------------------------------------------------------
-# 2. التطبيق الرئيسي (دمج كافة الامتيازات)
+# 2. التطبيق الرئيسي (إعادة القائمة الكاملة)
 # -------------------------------------------------------------
 def main():
     initialize_db()
@@ -85,9 +82,8 @@ def main():
 
     if not st.session_state.logged_in:
         st.title("🔐 قفل الأمان - شركة اكسبو تايم")
-        with st.form("login_form"):
-            u = st.text_input("المستخدم")
-            p = st.text_input("كلمة المرور", type="password")
+        with st.form("login"):
+            u, p = st.text_input("اسم المستخدم"), st.text_input("كلمة المرور", type="password")
             if st.form_submit_button("دخول"):
                 hp = hashlib.sha256(p.encode()).hexdigest()
                 res, _ = fetch_query("SELECT role FROM users WHERE username=? AND password=?", (u, hp))
@@ -101,17 +97,33 @@ def main():
     if low_stock_data: st.sidebar.error(f"🚨 تنبيه: يوجد {len(low_stock_data)} نواقص!")
 
     st.sidebar.title(f"👤 {st.session_state.username}")
-    menu = ["🔍 عرض المخزون والإدارة", "➕ إضافة صنف جديد", "⚙️ تعريف منتج BOM", "📤 صرف أصناف مجمع", "👥 إدارة المستخدمين", "📜 السجل"]
-    if st.session_state.role != "مدير": menu.remove("👥 إدارة المستخدمين")
+    
+    # إرجاع القائمة الكاملة كما كانت سابقاً
+    menu = [
+        "🔍 عرض وحذف الأصناف", 
+        "➕ إضافة وتحديث صنف", 
+        "⚙️ تعريف منتج BOM", 
+        "📤 صرف أصناف مجمع", 
+        "🏭 صرف BOM", 
+        "📦 طلب شراء PDF", 
+        "📜 سجل العمليات", 
+        "👥 إدارة المستخدمين"
+    ]
+    
+    # حماية إدارة المستخدمين للمدير فقط
+    if st.session_state.role != "مدير":
+        if "👥 إدارة المستخدمين" in menu: menu.remove("👥 إدارة المستخدمين")
+    
     choice = st.sidebar.selectbox("القائمة الرئيسية", menu)
-    st.markdown("---")
+    if st.sidebar.button("تسجيل الخروج"):
+        st.session_state.logged_in = False; st.rerun()
 
-    items_raw, _ = fetch_query("SELECT sku, name, quantity, unit, min_stock, price, supplier_name FROM items")
+    items_raw, _ = fetch_query("SELECT sku, name, quantity, unit, price, supplier_name, min_stock FROM items")
     item_options = [f"{s[1]} ({s[0]}) | وحدة: {s[3]}" for s in items_raw]
     all_names = [s[1] for s in items_raw]
 
-    # --- 1. المخزون والإدارة (صلاحيات المدير) ---
-    if choice == "🔍 عرض المخزون والإدارة":
+    # --- 1. عرض وحذف الأصناف (صلاحيات المدير المطلقة) ---
+    if choice == "🔍 عرض وحذف الأصناف":
         search = st.text_input("بحث بالاسم أو الكود")
         data, _ = fetch_query("SELECT name, sku, quantity, unit, price, supplier_name, min_stock FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
         if data:
@@ -125,18 +137,16 @@ def main():
                 target = st.selectbox("اختر SKU للتعديل", [""] + [d[1] for d in data])
                 if target:
                     c1, c2, c3 = st.columns(3)
-                    nq = c1.number_input("تعديل الكمية", value=0)
-                    np = c2.number_input("تعديل السعر", value=0.0)
-                    ns = c3.text_input("تعديل المورد")
-                    if st.button("✅ حفظ"):
+                    nq, np, ns = c1.number_input("الكمية"), c2.number_input("السعر"), c3.text_input("المورد")
+                    if st.button("✅ حفظ التعديلات"):
                         execute_query("UPDATE items SET quantity=?, price=?, supplier_name=? WHERE sku=?", (nq, np, ns, target))
                         st.rerun()
-                    if st.button("❌ حذف نهائياً"):
+                    if st.button("❌ حذف نهائي"):
                         execute_query("DELETE FROM items WHERE sku=?", (target,))
                         st.rerun()
 
-    # --- 2. إضافة صنف جديد ---
-    elif choice == "➕ إضافة صنف جديد":
+    # --- 2. إضافة وتحديث (ترقيم تلقائي مخفي) ---
+    elif choice == "➕ إضافة وتحديث صنف":
         with st.form("add_form"):
             name = st.text_input("اسم المنتج")
             col1, col2 = st.columns(2)
@@ -144,14 +154,13 @@ def main():
             unit = col2.selectbox("الوحدة", ["قطعة", "بكت", "جرام", "درزن", "كيلو"])
             price = st.number_input("السعر", min_value=0.0)
             supplier = st.text_input("المورد", value="غير محدد")
-            if st.form_submit_button("حفظ"):
+            if st.form_submit_button("حفظ المنتج"):
                 new_sku = generate_auto_sku()
                 now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                execute_query("INSERT INTO items (name, sku, quantity, unit, price, supplier_name, last_updated) VALUES (?,?,?,?,?,?,?)", 
-                             (name, new_sku, int(qty), unit, price, supplier, now))
-                st.success(f"تم الحفظ. الكود: {new_sku}")
+                execute_query("INSERT INTO items (name, sku, quantity, unit, price, supplier_name, last_updated) VALUES (?,?,?,?,?,?,?)", (name, new_sku, int(qty), unit, price, supplier, now))
+                st.success(f"تم الحفظ بالكود: {new_sku}")
 
-    # --- 3. تعريف BOM (7 مكونات) ---
+    # --- 3. تعريف منتج BOM (7 مكونات وأكثر) ---
     elif choice == "⚙️ تعريف منتج BOM":
         p_name = st.selectbox("المنتج النهائي", [""] + all_names)
         if p_name:
@@ -161,17 +170,17 @@ def main():
                 for i in range(7):
                     c1, c2 = st.columns([3, 1])
                     mat = c1.selectbox(f"المكون {i+1}", [""] + item_options, key=f"m_{i}")
-                    mq = c2.number_input(f"الكمية {i+1}", min_value=0, key=f"mq_{i}")
-                    if mat: rows.append((mat.split("(")[1].split(")")[0], mq))
-                if st.form_submit_button("حفظ BOM"):
-                    for m_sku, m_q in rows:
-                        execute_query("INSERT OR REPLACE INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (p_name, m_sku, m_q))
+                    m_qty = c2.number_input(f"الكمية {i+1}", min_value=0, key=f"mq_{i}")
+                    if mat: rows.append((mat.split("(")[1].split(")")[0], m_qty))
+                if st.form_submit_button("حفظ مكونات BOM"):
+                    for m_sku, m_qty in rows:
+                        execute_query("INSERT OR REPLACE INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (p_name, m_sku, m_qty))
                     st.success("تم الحفظ")
 
-    # --- 4. صرف مجمع (حتى 40 منتج) ---
+    # --- 4. صرف أصناف مجمع (حتى 40 منتج) ---
     elif choice == "📤 صرف أصناف مجمع":
         if 'iss_rows' not in st.session_state: st.session_state.iss_rows = 1
-        if st.button("➕ إضافة سطر"): st.session_state.iss_rows += 1
+        if st.button("➕ إضافة سطر صرف"): st.session_state.iss_rows += 1
         basket = []
         with st.form("iss_form"):
             for i in range(st.session_state.iss_rows):
@@ -179,7 +188,7 @@ def main():
                 s = c1.selectbox(f"الصنف {i+1}", [""] + item_options, key=f"is_{i}")
                 q = c2.number_input(f"الكمية {i+1}", min_value=1, key=f"iq_{i}")
                 if s: basket.append((s.split("(")[1].split(")")[0], q))
-            if st.form_submit_button("🚀 تنفيذ الصرف"):
+            if st.form_submit_button("🚀 تنفيذ الصرف الجماعي"):
                 now = datetime.now()
                 ref = f"DO-{now.strftime('%y%m%d%H%M')}"
                 for sku, q in basket:
@@ -187,13 +196,27 @@ def main():
                     execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,'OUT',?,?,?,?)", (ref, sku, q, st.session_state.username, "صرف مجمع", now.strftime("%Y-%m-%d %H:%M")))
                 st.success(f"تم الصرف بالسند: {ref}")
 
-    # --- 5. إدارة المستخدمين ---
+    # --- 5. صرف BOM ---
+    elif choice == "🏭 صرف BOM":
+        st.subheader("صرف مكونات الإنتاج")
+        p_target = st.selectbox("المنتج المراد إنتاجه", all_names)
+        p_qty = st.number_input("الكمية المطلوبة", min_value=1, step=1)
+        if st.button("🚀 تنفيذ التجميع"):
+            comps, _ = fetch_query("SELECT raw_material_sku, required_quantity FROM bom_recipes WHERE assembled_product_name=?", (p_target,))
+            if comps:
+                now, ref = datetime.now(), f"BOM-{datetime.now().strftime('%H%M')}"
+                for c_sku, c_req in comps:
+                    total = int(c_req * p_qty)
+                    execute_query("UPDATE items SET quantity=quantity-? WHERE sku=?", (total, c_sku))
+                    execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,'OUT',?,?,?,?)", (ref, c_sku, total, st.session_state.username, f"إنتاج لـ {p_target}", now.strftime("%Y-%m-%d %H:%M")))
+                st.success("تم صرف المكونات بنجاح")
+
+    # --- 6. إدارة المستخدمين ---
     elif choice == "👥 إدارة المستخدمين":
         u_data, _ = fetch_query("SELECT username, role FROM users")
         st.table(pd.DataFrame(u_data, columns=['المستخدم', 'الدور']))
         with st.form("u_form"):
-            nu, np = st.text_input("المستخدم الجديد"), st.text_input("كلمة المرور", type="password")
-            nr = st.selectbox("الدور", ["موظف", "مدير"])
+            nu, np, nr = st.text_input("اسم المستخدم"), st.text_input("كلمة المرور", type="password"), st.selectbox("الدور", ["موظف", "مدير"])
             if st.form_submit_button("إضافة"):
                 hp = hashlib.sha256(np.encode()).hexdigest()
                 execute_query("INSERT INTO users VALUES (?,?,?)", (nu, hp, nr))
@@ -201,7 +224,7 @@ def main():
 
     elif choice == "📜 سجل العمليات":
         logs, _ = fetch_query("SELECT timestamp, ref_code, sku, type, quantity_change, user FROM transactions ORDER BY id DESC")
-        st.table(pd.DataFrame(logs, columns=['الوقت', 'السند', 'الكود', 'العملية', 'الكمية', 'المستخدم']))
+        st.table(pd.DataFrame(logs, columns=['الوقت', 'السند', 'الكود', 'النوع', 'الكمية', 'المستخدم']))
 
 if __name__ == "__main__":
     main()

@@ -6,7 +6,7 @@ from fpdf import FPDF
 import hashlib
 
 # -------------------------------------------------------------
-# 1. إعداد قاعدة البيانات (نظام الإصلاح الشامل)
+# 1. إعداد قاعدة البيانات (إصلاح خطأ التكرار)
 # -------------------------------------------------------------
 DATABASE_NAME = 'inventory_control.db'
 
@@ -14,7 +14,7 @@ def initialize_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
-    # إنشاء الجداول الأساسية
+    # إنشاء الجداول الأساسية إذا لم تكن موجودة
     cursor.execute('''CREATE TABLE IF NOT EXISTS items 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, sku TEXT UNIQUE, quantity INTEGER, 
         unit TEXT, min_stock INTEGER DEFAULT 5, price REAL, supplier_name TEXT DEFAULT 'غير محدد', last_updated TEXT)''')
@@ -29,15 +29,16 @@ def initialize_db():
     
     cursor.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT)')
     
-    # --- فحص وإصلاح الأعمدة لتجنب NOT NULL constraint failed ---
+    # --- فحص ذكي للأعمدة لتجنب خطأ التكرار (OperationalError) ---
     cursor.execute("PRAGMA table_info(items)")
     cols = [info[1] for info in cursor.fetchall()]
     
     if 'unit' not in cols:
-        cursor.execute("ALTER TABLE items ADD COLUMN unit TEXT DEFAULT 'قطعة'")
+        try: cursor.execute("ALTER TABLE items ADD COLUMN unit TEXT DEFAULT 'قطعة'")
+        except: pass
     if 'supplier_name' not in cols:
-        # إذا كان العمود القديم باسم supplier نقوم بتغييره أو إضافة الجديد
-        cursor.execute("ALTER TABLE items ADD COLUMN supplier_name TEXT DEFAULT 'غير محدد'")
+        try: cursor.execute("ALTER TABLE items ADD COLUMN supplier_name TEXT DEFAULT 'غير محدد'")
+        except: pass
     
     conn.commit()
     conn.close()
@@ -54,7 +55,7 @@ def execute_query(query, params=()):
         conn.commit()
         return True
     except sqlite3.Error as e:
-        st.error(f"⚠️ خطأ في قاعدة البيانات: {e}")
+        st.error(f"⚠️ خطأ: {e}")
         return False
     finally: conn.close()
 
@@ -78,19 +79,21 @@ def generate_auto_sku():
 # -------------------------------------------------------------
 def main():
     initialize_db()
-    st.set_page_config(page_title="اكسبو تايم - النظام المتكامل", layout="wide")
+    st.set_page_config(page_title="اكسبو تايم المتكامل", layout="wide")
 
     if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 
     if not st.session_state.logged_in:
-        st.title("🔐 دخول النظام")
-        u, p = st.text_input("المستخدم"), st.text_input("كلمة المرور", type="password")
-        if st.button("دخول"):
-            hp = hashlib.sha256(p.encode()).hexdigest()
-            res, _ = fetch_query("SELECT role FROM users WHERE username=? AND password=?", (u, hp))
-            if res:
-                st.session_state.logged_in, st.session_state.username, st.session_state.role = True, u, res[0][0]
-                st.rerun()
+        st.title("🔐 قفل الأمان - شركة اكسبو تايم")
+        with st.form("login_form"):
+            u = st.text_input("المستخدم")
+            p = st.text_input("كلمة المرور", type="password")
+            if st.form_submit_button("دخول"):
+                hp = hashlib.sha256(p.encode()).hexdigest()
+                res, _ = fetch_query("SELECT role FROM users WHERE username=? AND password=?", (u, hp))
+                if res:
+                    st.session_state.logged_in, st.session_state.username, st.session_state.role = True, u, res[0][0]
+                    st.rerun()
         return
 
     # تنبيه النواقص الجانبي
@@ -98,16 +101,17 @@ def main():
     if low_stock_data: st.sidebar.error(f"🚨 تنبيه: يوجد {len(low_stock_data)} نواقص!")
 
     st.sidebar.title(f"👤 {st.session_state.username}")
-    menu = ["🔍 المخزون والإدارة", "➕ إضافة صنف جديد", "⚙️ تعريف منتج BOM", "📤 صرف أصناف مجمع", "👥 إدارة المستخدمين", "📜 السجل"]
+    menu = ["🔍 عرض المخزون والإدارة", "➕ إضافة صنف جديد", "⚙️ تعريف منتج BOM", "📤 صرف أصناف مجمع", "👥 إدارة المستخدمين", "📜 السجل"]
     if st.session_state.role != "مدير": menu.remove("👥 إدارة المستخدمين")
-    choice = st.sidebar.selectbox("القائمة", menu)
+    choice = st.sidebar.selectbox("القائمة الرئيسية", menu)
+    st.markdown("---")
 
     items_raw, _ = fetch_query("SELECT sku, name, quantity, unit, min_stock, price, supplier_name FROM items")
     item_options = [f"{s[1]} ({s[0]}) | وحدة: {s[3]}" for s in items_raw]
     all_names = [s[1] for s in items_raw]
 
     # --- 1. المخزون والإدارة (صلاحيات المدير) ---
-    if choice == "🔍 المخزون والإدارة":
+    if choice == "🔍 عرض المخزون والإدارة":
         search = st.text_input("بحث بالاسم أو الكود")
         data, _ = fetch_query("SELECT name, sku, quantity, unit, price, supplier_name, min_stock FROM items WHERE name LIKE ? OR sku LIKE ?", (f'%{search}%', f'%{search}%'))
         if data:
@@ -124,38 +128,32 @@ def main():
                     nq = c1.number_input("تعديل الكمية", value=0)
                     np = c2.number_input("تعديل السعر", value=0.0)
                     ns = c3.text_input("تعديل المورد")
-                    if st.button("✅ حفظ التعديلات"):
+                    if st.button("✅ حفظ"):
                         execute_query("UPDATE items SET quantity=?, price=?, supplier_name=? WHERE sku=?", (nq, np, ns, target))
                         st.rerun()
-                    if st.button("❌ حذف المنتج نهائياً"):
+                    if st.button("❌ حذف نهائياً"):
                         execute_query("DELETE FROM items WHERE sku=?", (target,))
                         st.rerun()
 
-    # --- 2. إضافة صنف جديد (حل مشكلة NOT NULL) ---
+    # --- 2. إضافة صنف جديد ---
     elif choice == "➕ إضافة صنف جديد":
-        st.subheader("إضافة منتج جديد")
         with st.form("add_form"):
             name = st.text_input("اسم المنتج")
             col1, col2 = st.columns(2)
             qty = col1.number_input("الكمية", min_value=0, step=1)
             unit = col2.selectbox("الوحدة", ["قطعة", "بكت", "جرام", "درزن", "كيلو"])
             price = st.number_input("السعر", min_value=0.0)
-            supplier = st.text_input("اسم المورد", value="غير محدد") # القيمة الافتراضية تمنع الخطأ
-            m_stock = st.number_input("حد التنبيه", value=5)
-            
-            if st.form_submit_button("حفظ المنتج"):
-                if name:
-                    new_sku = generate_auto_sku()
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    # تم التأكد من ترتيب الأعمدة ومطابقتها لقاعدة البيانات
-                    query = "INSERT INTO items (name, sku, quantity, unit, price, supplier_name, min_stock, last_updated) VALUES (?,?,?,?,?,?,?,?)"
-                    if execute_query(query, (name, new_sku, int(qty), unit, price, supplier, m_stock, now)):
-                        st.success(f"✅ تم الحفظ. الكود المولد: {new_sku}")
-                        st.rerun()
+            supplier = st.text_input("المورد", value="غير محدد")
+            if st.form_submit_button("حفظ"):
+                new_sku = generate_auto_sku()
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                execute_query("INSERT INTO items (name, sku, quantity, unit, price, supplier_name, last_updated) VALUES (?,?,?,?,?,?,?)", 
+                             (name, new_sku, int(qty), unit, price, supplier, now))
+                st.success(f"تم الحفظ. الكود: {new_sku}")
 
     # --- 3. تعريف BOM (7 مكونات) ---
     elif choice == "⚙️ تعريف منتج BOM":
-        p_name = st.selectbox("المنتج النهائي المجمع", [""] + all_names)
+        p_name = st.selectbox("المنتج النهائي", [""] + all_names)
         if p_name:
             with st.form("bom_form"):
                 st.write("أضف المكونات (حتى 7):")
@@ -163,17 +161,17 @@ def main():
                 for i in range(7):
                     c1, c2 = st.columns([3, 1])
                     mat = c1.selectbox(f"المكون {i+1}", [""] + item_options, key=f"m_{i}")
-                    m_qty = c2.number_input(f"الكمية {i+1}", min_value=0, key=f"mq_{i}")
-                    if mat: rows.append((mat.split("(")[1].split(")")[0], m_qty))
-                if st.form_submit_button("حفظ مكونات BOM"):
+                    mq = c2.number_input(f"الكمية {i+1}", min_value=0, key=f"mq_{i}")
+                    if mat: rows.append((mat.split("(")[1].split(")")[0], mq))
+                if st.form_submit_button("حفظ BOM"):
                     for m_sku, m_q in rows:
                         execute_query("INSERT OR REPLACE INTO bom_recipes (assembled_product_name, raw_material_sku, required_quantity) VALUES (?,?,?)", (p_name, m_sku, m_q))
-                    st.success("تم الحفظ بنجاح")
+                    st.success("تم الحفظ")
 
     # --- 4. صرف مجمع (حتى 40 منتج) ---
     elif choice == "📤 صرف أصناف مجمع":
         if 'iss_rows' not in st.session_state: st.session_state.iss_rows = 1
-        if st.button("➕ إضافة سطر صرف"): st.session_state.iss_rows += 1
+        if st.button("➕ إضافة سطر"): st.session_state.iss_rows += 1
         basket = []
         with st.form("iss_form"):
             for i in range(st.session_state.iss_rows):
@@ -187,16 +185,14 @@ def main():
                 for sku, q in basket:
                     execute_query("UPDATE items SET quantity=quantity-? WHERE sku=?", (q, sku))
                     execute_query("INSERT INTO transactions (ref_code, sku, type, quantity_change, user, reason, timestamp) VALUES (?,?,'OUT',?,?,?,?)", (ref, sku, q, st.session_state.username, "صرف مجمع", now.strftime("%Y-%m-%d %H:%M")))
-                st.success(f"✅ تم الصرف بالسند: {ref}")
-                st.session_state.iss_rows = 1
+                st.success(f"تم الصرف بالسند: {ref}")
 
     # --- 5. إدارة المستخدمين ---
     elif choice == "👥 إدارة المستخدمين":
-        st.subheader("إدارة الموظفين")
         u_data, _ = fetch_query("SELECT username, role FROM users")
         st.table(pd.DataFrame(u_data, columns=['المستخدم', 'الدور']))
         with st.form("u_form"):
-            nu, np = st.text_input("المستخدم"), st.text_input("كلمة المرور", type="password")
+            nu, np = st.text_input("المستخدم الجديد"), st.text_input("كلمة المرور", type="password")
             nr = st.selectbox("الدور", ["موظف", "مدير"])
             if st.form_submit_button("إضافة"):
                 hp = hashlib.sha256(np.encode()).hexdigest()

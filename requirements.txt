@@ -1,6 +1,5 @@
 streamlit
 pandas
 fpdf
-
 python-dotenv
 streamlit_app.py
